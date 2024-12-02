@@ -47,7 +47,7 @@ receiver_parameter // add
 ```
 
 Extension containers shall only be declared in non-generic, non-nested static classes.  
-It is an error for a type to be named `extension`.  
+It is an error for a type to be named `extension` in C# 14.  
 
 ### Static classes as extension containers
 
