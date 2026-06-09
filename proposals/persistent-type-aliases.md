@@ -77,8 +77,7 @@ This proposal introduces persistent alias types as erased, nominal source-level 
 - Alias members are specified in terms of `this`, with no named receiver parameter in source.
 - Lowering preserves that abstraction boundary; any receiver parameter used by the implementation is an implementation detail and does not introduce a user-visible or metadata-visible synthesized name.
 
-TODO phrase principle better
-The guiding principle is that an alias value is transparent where its underlying value is expected. Anything that can be done with a value of `U` can also be done with a value of `A`, including invoking members and extension members of `U`, applying conversions from `U`, and satisfying constraints satisfied by `U`.
+The guiding principle is that anything that can be done with a value of `U` can also be done with a value of `A`.
 
 Throughout this section, ~~strikethrough~~ indicates text being removed from the existing specification, and **bold** indicates text being added.  Unchanged prose is quoted verbatim for context.
 
@@ -514,6 +513,10 @@ The discussion specifically favored avoiding a synthesized name for the lowered 
 ## Drawbacks
 [drawbacks]: #drawbacks
 
+This proposal uses transparent rather than opaque alias types, which doesn't allow an alias to remove or replace a member of the underlying type.  
+This proposal doesn't allow restricting the set of constructed values for an alias type. For example, `alias PositiveInt : int;`.
+This proposal uses erasable alias types, so runtime type detection isn't possible.
+
 ## Alternatives
 [alternatives]: #alternatives
 
@@ -524,6 +527,7 @@ As mentioned earlier, developers can already define wrapper types and type alias
 
 TODO implicit conversion from underlying type weakens the safeguard
 TODO not being able to overload on alias differences may be a problem
+TODO should we prevent `customerId + orderId`?
 
 ### Restrictions on underlying types?
 
