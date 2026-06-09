@@ -281,21 +281,7 @@ CustomerId customerId = ...;
 string text = customerId; // TODO: ok if `CustomerId` to `DatabaseId` is a standard implicit conversion before the user-defined conversion to `string`?
 ```
 
-Constants and literals do not convert to alias types without an explicit alias conversion.
-
-```cs
-alias CustomerId : int;
-
-CustomerId id1 = 42;             // error: no implicit conversion from the literal
-CustomerId id2 = (CustomerId)42; // ok: explicit alias conversion
-
-CustomerId customerId = (CustomerId)42;
-long rawLong1 = customerId;      // ok: `CustomerId` converts to `int`, then `int` converts to `long`
-long rawLong2 = (long)customerId;
-
-CustomerId id3 = (CustomerId)1L;       // TODO: allowed through explicit numeric conversion to `int`, then explicit alias conversion?
-CustomerId id4 = (CustomerId)(int)1L;
-```
+TODO: conversion from expression (for example 42)
 
 TODO: Decide whether conversions to alias types compose with conversions to the underlying type. For example, if `CustomerId` is an alias for `int`, should a cast from `long` to `CustomerId` be permitted directly because `long` has an explicit numeric conversion to `int`, or should the conversion be written through the underlying type?
 
@@ -310,7 +296,11 @@ Member lookup on an alias-typed value proceeds in two phases:
 1. **Instance members of the ultimate underlying type come first.** Lookup on a value whose type is an alias `A` first considers the instance members of `A`'s *ultimate underlying type* `U` (and `U`'s base hierarchy), exactly as if the receiver had type `U`. As with extension members generally, the alias-declared members in the second phase are only considered when this phase finds no applicable instance member.
 2. **Alias-declared members then come into play as extensions.** Each level of the alias chain contributes its declared members as extension members whose receiver parameter is that level's alias type. All levels contribute candidates regardless of which level the static receiver type names.
 
-Among the alias-level candidates, the alias chain is resolved by ordinary overload resolution betterness on the receiver argument, which prefers more-specific receiver parameter type.
+TODO: simplify below and consider betterness discussions to dedicated section
+
+Among the alias-level candidates, the alias chain is resolved by ordinary overload resolution betterness on the receiver argument, which prefers the more-specific receiver parameter type. No new betterness rule is required: the result falls out of the existing overload resolution rules in [§12.6.4.5](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/expressions.md#12645-better-conversion-from-expression), [§12.6.4.6](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/expressions.md#12646-exactly-matching-expression), and [§12.6.4.7](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/expressions.md#12647-better-conversion-target), given that an alias conversion is an *implicit* conversion ([Conversions](#conversions)) that is *not* an identity conversion.
+
+Because an alias conversion is not an identity conversion, a receiver of alias type `A` *exactly matches* ([§12.6.4.6](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/expressions.md#12646-exactly-matching-expression)) only a parameter whose type is `A` itself, so identity with `A` is preferred over any less-aliased parameter type by the first bullet of [§12.6.4.5](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/expressions.md#12645-better-conversion-from-expression). When the receiver exactly matches none of the candidate parameter types (for example, a `Companion` receiver against `Pet` and `Animal` parameters), the second bullet defers to [§12.6.4.7](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/expressions.md#12647-better-conversion-target): since the implicit alias conversion runs from more-aliased to less-aliased (and not back), `Pet` is a *better conversion target* than `Animal`, and likewise each alias level is a better target than the levels below it down to the ultimate underlying type. The net effect is that the more-aliased level wins.
 
 ```cs
 class Animal { public void Eat() { } }
@@ -493,18 +483,20 @@ EmailAddress? maybeEmail;
 
 The likely model is that nullability composes with the alias type, while the underlying representation remains the same as the annotated underlying type. Details for nullable flow analysis, oblivious contexts, and annotations emitted for metadata consumers remain open.
 
+The default value of an alias type is the default value of its underlying type, and `default` produces it.
+
 ### Pattern matching
 
-Persistent aliases should be usable in source patterns only where the alias test can be defined without pretending that the alias type has runtime identity:
+Because persistent aliases are erased, a runtime type test cannot distinguish an alias type from its underlying type.
+But alias types in patterns give access to extension properties. 
+TODO we need to discuss this more. The type pattern may be misleading, but making it error or warn seems harsh/annoying.
 
 ```cs
-if (value is CustomerId id)
-{
-    ...
-}
+object value = ...;
+if (value is CustomerId id) { ... }         // disallowed (or warning): cannot test for an alias type at run time
+if (value is List<CustomerId> list) { ... } // disallowed (or warning): same
+if (value is int i) { ... }                 // ok: test against the underlying type
 ```
-
-Because persistent aliases are erased, a runtime type test cannot distinguish `CustomerId` from `int`. The language must decide whether alias patterns are compile-time-only conversions, are disallowed in runtime type-test positions, or lower to tests against the underlying type plus an alias assertion.
 
 ### Reflection, attributes, and metadata
 
@@ -530,6 +522,9 @@ As mentioned earlier, developers can already define wrapper types and type alias
 ## Open questions
 [open]: #open-questions
 
+TODO implicit conversion from underlying type weakens the safeguard
+TODO not being able to overload on alias differences may be a problem
+
 ### Restrictions on underlying types?
 
 Can one alias be based on another alias?
@@ -545,13 +540,6 @@ Some restrictions may come from the metadata encoding (TODO).
 TODO can a pointer type be an underlying type?
 TODO disallow nullable reference type as underlying type
 
-TODO we need an accessibility rule: the underlying type should be at least as accessible as the alias type.
-
-### Generics
-
-How should `List<CustomerId>` be represented and distinguished from `List<int>`? Yes
-Can alias types appear in all generic type argument positions? Yes
-
 ### Metadata representation
 
 What metadata is required for public APIs involving persistent aliases? Can existing metadata represent all necessary source-level information, including unnamed receiver parameters for lowered alias members?
@@ -560,13 +548,25 @@ What metadata is required for public APIs involving persistent aliases? Can exis
 
 Is changing a parameter from `int` to `CustomerId` a source breaking change, a binary breaking change, both, or neither? What about changing an alias type's underlying type?
 
-### Pattern matching and `is`/`as`
-
-Should runtime type tests observe alias types or only underlying types? Since persistent aliases erase, `is CustomerId` likely cannot be a normal runtime type test without compiler-specific metadata rules.
-
 ### Dynamic
 
-How do alias-typed values behave when converted to or from `dynamic`? Does alias identity disappear at the dynamic boundary?
+Resolved: alias types are erased at run time, so alias identity disappears at the `dynamic` boundary. Converting an alias-typed value to `dynamic` and back observes only the underlying type, and member binding through `dynamic` sees the underlying type's members, not alias members.
+
+### Attributes
+
+How do alias types interact with attributes?
+- May an alias type be used as an attribute argument type, or as the operand of `typeof` in an attribute argument, given that it erases to its underlying type?
+- May an alias declaration itself carry attributes, and how are they encoded so a capable compiler can recover them?
+
+### Conversion classification and composition
+
+Is the implicit conversion from an alias type to a type it is an alias over a *standard* implicit conversion? This is observable when alias values participate around user-defined conversions, which permit a standard conversion before and after the user-defined operator.
+
+Relatedly, do conversions to and from alias types compose with conversions to the underlying type? For example, should a cast from `long` to `CustomerId` (with `alias CustomerId : int`) be permitted directly because `long` has an explicit numeric conversion to `int`, or must it be written through the underlying type? Introducing a new standard conversion interacts with the existing limit of at most one standard conversion on each side of a user-defined conversion, and the consequences need to be worked through.
+
+### Definite assignment
+
+How does definite assignment apply to alias types, in particular the difference between an alias over a struct type and an alias over a class type?
 
 ### Nullable reference types
 
