@@ -106,6 +106,8 @@ The following change is applied to the grammar in [§14.7](https://github.com/do
 +    ;
 ```
 
+TODO a new keyword would likely be contextual and reserved moving forward (i.e. disallowed as a type name).
+
 ### Alias type declarations
 
 An alias type declaration specifies its underlying type:
@@ -130,6 +132,21 @@ internal class C { }
 public alias Handle : C;                // error: `C` is less accessible than `Handle`
 ```
 
+The underlying may not be a nullable reference type:
+
+```cs
+alias Base64String : string?; // error
+
+alias Id : string;
+alias CustomerId : Id?; // error
+```
+
+TODO: any other restrictions on underlying type? this depends on metadata encoding
+
+TODO: define which characteristics an alias type inherits from its underlying type, and which instance constructors an alias type is considered to declare. This determines how an alias type behaves with respect to the `new()` constraint and object creation.
+
+### Usage of alias types
+
 The base classes rules in [15.2.4.2](https://github.com/dotnet/csharpstandard/blob/draft-v8/standard/classes.md#15242-base-classes) are augmented with:
 
 > **A base class cannot be a alias type on its own.**
@@ -140,22 +157,20 @@ alias Alias : Base;
 class Derived : Alias; // error (otherwise the member lookup on Derived would have to interleave instance and extension members)
 ```
 
-Two alias declarations with the same underlying type are distinct source-level types:
+The signature comparison rules in [§7.6](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/basic-concepts.md#76-signatures-and-overloading) determine which overloads may coexist.  
+They remain unchanged, allowing for overloads differing by alias types only:
 
 ```cs
 alias CustomerId : int;
 alias OrderId : int;
 
-CustomerId customerId = ...;
-OrderId orderId = ...;
-
-LoadCustomer(customerId); // ok
-LoadCustomer(orderId);    // error
+void Load(int id);
+void Load(CustomerId id); // ok
+void Load(OrderId id); // ok
 ```
 
-TODO: what are the restrictions on underlying type? this depends on metadata encoding
-
-TODO: define which characteristics an alias type inherits from its underlying type, and which instance constructors an alias type is considered to declare. This determines how an alias type behaves with respect to the `new()` constraint and object creation.
+TODO confirm whether the metadata erasure can support this (modopt). If not, then we'll have to disallow
+TODO I think the issue with modopt is that it requires that we be able to construct a valid type. But constraints and sealed make that impossible...
 
 ### Alias type members
 
@@ -189,27 +204,6 @@ Therefore extension members declared for the underlying type are applicable to v
 CustomerId customerId = ...;
 bool isTest = customerId.IsTest;
 ```
-
-### Signatures and overloading
-
-The signature comparison rules in [§7.6](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/basic-concepts.md#76-signatures-and-overloading) determine which overloads may coexist.  
-They remain unchanged, allowing for overloads differing by alias types only:
-
-```cs
-alias CustomerId : int;
-
-void Load(int id);
-void Load(CustomerId id); // ok
-```
-
-```cs
-alias OrderId : int;
-
-void Load(CustomerId id);
-void Load(OrderId id); // ok
-```
-
-TODO confirm whether the metadata erasure can support this (modopt). If not, then we'll have to disallow
 
 ### Conversions
 
@@ -404,7 +398,8 @@ Alias types can be used as type arguments:
 List<CustomerId> ids = ...;
 ```
 
-When an alias type is used as a *constraint*, the convertibility check in the first bullet of [§8.4.5](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/types.md#845-satisfying-constraints) (for a *class_type*, *interface_type*, or *type_parameter* constraint) is performed against the constraint type as written, not its underlying type. For example, given `alias A : C;`, the constraint `where T : C` is satisfied by both `C` and `A` (because `A` implicitly converts to `C`), whereas `where T : A` is satisfied by `A` but not by `C` (because `C` only *explicitly* converts to `A`).
+When an alias type is used as a *constraint*, the convertibility check for a *class_type*, *interface_type*, or *type_parameter* constraint is performed against the constraint type as written.  
+For example, given `alias A : C;`, the constraint `where T : C` is satisfied by both `C` and `A` (because `A` implicitly converts to `C`), whereas `where T : A` is satisfied by `A` but not by `C` (because `C` only *explicitly* converts to `A`).
 
 With chained aliases `alias A1 : int;` and `alias A2 : A1;`, this asymmetry applies at each level: `where T : A1` is satisfied by `A2` and `A1` (each implicitly converts to `A1`) but not by `int`, and `where T : A2` is satisfied only by `A2`.
 
@@ -434,7 +429,7 @@ M<Marker>();  // error: underlying type `IsAbstract` is abstract
 
 ### Nullable annotations
 
-Persistent aliases over reference types need nullable semantics:
+Alias types on underlying reference types are reference types and so can be annotated:
 
 ```cs
 alias EmailAddress : string;
@@ -442,10 +437,6 @@ alias EmailAddress : string;
 EmailAddress email;
 EmailAddress? maybeEmail;
 ```
-
-The likely model is that nullability composes with the alias type, while the underlying representation remains the same as the annotated underlying type. Details for nullable flow analysis, oblivious contexts, and annotations emitted for metadata consumers remain open.
-
-The default value of an alias type is the default value of its underlying type, and `default` produces it.
 
 ### Pattern matching
 
@@ -460,18 +451,22 @@ if (value is List<CustomerId> list) { ... } // disallowed (or warning): same
 if (value is int i) { ... }                 // ok: test against the underlying type
 ```
 
-### Reflection, attributes, and metadata
+### Metadata erasure
 
-Since persistent aliases erase to the underlying representation, reflection over ordinary runtime values would normally observe the underlying type. The source compiler may still need attributes or custom metadata to recover alias information from assemblies.
+TODO
+Some options include:
+- modopt
+- attribute with a string in `typeof` format
 
-Possible metadata needs include:
+The metadata encoding will determine what is a source breaking change, a binary breaking change, both, or neither.
 
-- Identifying an alias declaration and its underlying type.
-- Marking alias-typed parameters, returns, fields, locals, properties, and generic arguments.
-- Marking lowered alias members and their receiver parameter.
-- Supporting documentation and IDE navigation from source alias declarations to lowered members.
-
-The discussion specifically favored avoiding a synthesized name for the lowered receiver parameter. If metadata supports unnamed parameters for the chosen lowering shape, the receiver should be emitted unnamed.
+If we emit the alias members as extension blocks, will it block generic aliases?
+```cs
+alias BetterList<T> : List<T>
+{
+    ... members ...
+}
+```
 
 ## Drawbacks
 [drawbacks]: #drawbacks
@@ -488,36 +483,17 @@ As mentioned earlier, developers can already define wrapper types and type alias
 ## Open questions
 [open]: #open-questions
 
-TODO implicit conversion from underlying type weakens the safeguard
-TODO not being able to overload on alias differences may be a problem
-TODO should we prevent `customerId + orderId`?
+- implicit conversion from underlying type weakens the safeguard
+- interaction with `typeof`?
+- interaction with `sizeof`?
+- interaction with `unsafe`?
+- do we need to specify `default(Alias)` or `default` or `null`?
+- best-common-type and type inference across alias and underlying
+- `case CustomerId` vs. `case int`
 
 ### Restrictions on underlying types?
 
-Can one alias be based on another alias?
-
-```csharp
-alias Base : int;
-alias Derived : Base;
-```
-
-Could you get an alias loop?
-
-Some restrictions may come from the metadata encoding (TODO).
-TODO can a pointer type be an underlying type?
-TODO disallow nullable reference type as underlying type
-
-### Metadata representation
-
-What metadata is required for public APIs involving persistent aliases? Can existing metadata represent all necessary source-level information, including unnamed receiver parameters for lowered alias members?
-
-### Versioning
-
-Is changing a parameter from `int` to `CustomerId` a source breaking change, a binary breaking change, both, or neither? What about changing an alias type's underlying type?
-
-### Dynamic
-
-Resolved: alias types are erased at run time, so alias identity disappears at the `dynamic` boundary. Converting an alias-typed value to `dynamic` and back observes only the underlying type, and member binding through `dynamic` sees the underlying type's members, not alias members.
+- can a pointer type be an underlying type?
 
 ### Attributes
 
@@ -525,40 +501,6 @@ How do alias types interact with attributes?
 - May an alias type be used as an attribute argument type, or as the operand of `typeof` in an attribute argument, given that it erases to its underlying type?
 - May an alias declaration itself carry attributes, and how are they encoded so a capable compiler can recover them?
 
-### Conversion classification and composition
-
-Is the implicit conversion from an alias type to a type it is an alias over a *standard* implicit conversion? This is observable when alias values participate around user-defined conversions, which permit a standard conversion before and after the user-defined operator.
-
-Relatedly, do conversions to and from alias types compose with conversions to the underlying type? For example, should a cast from `long` to `CustomerId` (with `alias CustomerId : int`) be permitted directly because `long` has an explicit numeric conversion to `int`, or must it be written through the underlying type? Introducing a new standard conversion interacts with the existing limit of at most one standard conversion on each side of a user-defined conversion, and the consequences need to be worked through.
-
-### Definite assignment
-
-How does definite assignment apply to alias types, in particular the difference between an alias over a struct type and an alias over a class type?
-
-### Nullable reference types
-
-How exactly do nullable annotations and flow analysis apply to persistent aliases over reference types?
-
 ### Tooling and documentation
 
-How should IDEs display alias-typed symbols whose metadata representation is the underlying type?
 How should XML documentation, Go To Definition, signature help, and generated API docs preserve the alias abstraction?
-
-### Baseline standard sections needing attention
-TODO
-A review of the ECMA-334 baseline against this proposal surfaced the following sections that need new or revised normative text. Sections the proposal already edits are marked *(edited; verify)*. Cross-cutting drivers: (a) erasure vs. runtime identity, (b) integrating "alias conversions" into the conversion taxonomy, (c) operator availability on alias operands, (d) the alias body depends on full *extension members* (the baseline has only classic extension methods), (e) syntactic *type classification* predicates (struct/enum/array/delegate/interface type) vs. the proposal's *type category* (reference/value/unmanaged), (f) nullability over reference-type aliases.
-
-- **Types (§8)**: §8.1 place aliases in the type taxonomy; §8.3.3/§8.3.13 default ctor & boxing of alias-over-struct; §8.3.12 alias over `int?`; §8.4.3 open/closed alias over a type parameter; §8.6/§8.7 expression trees & `dynamic` boundary; §8.8 *(edited; verify chaining)*; §8.9 nullable annotations over reference-type aliases.
-- **Conversions (§10)**: §10.2.1/§10.3.1 add alias conversions to the implicit/explicit lists; §10.2.2 distinguish alias conversion from identity; §10.4.2/§10.4.3 is alias→underlying a *standard* conversion; §10.5.3–§10.5.5 the standard+user-defined+standard composition limit; §10.2.7/§10.6.1 null-literal & nullable composition.
-- **Basic concepts (§7)**: §7.1 alias-over-`int` as `Main` return; §7.3/§7.4 enumerate alias declarations and "members of an alias type"; §7.5.2 permitted accessibilities; §7.5.5 & §7.6 *(edited; verify constructed types & chained aliases)*.
-- **Expressions (§12)**: §12.4.3–§12.4.8 operator candidacy/promotion/lifting for alias operands; §12.5.1–§12.5.2 two-phase member lookup & "base types" of an alias; §12.6.3/§12.6.4 inference preserving alias identity & receiver betterness for chained aliases; §12.8.7 member access; §12.8.14/§12.8.15 `this`/`base` in alias members; §12.8.17 candidate constructors; §12.8.18 `typeof` under erasure *(critical)*; §12.8.19/§12.8.21/§12.8.23 `sizeof`/`default`/`nameof`; §12.9.8/§12.11/§12.14 cast & `is`/`as`/patterns under erasure; §12.17/§12.18 best-common-type across alias vs. underlying; §12.19/§12.20/§12.21 lambdas, query, compound assignment.
-- **Classes (§15)**: §15.2.2 exclude `abstract`/`sealed`/`static`; §15.2.4 class deriving from an alias / alias-over-interface in base lists; §15.2.5 *(edited; verify)*; §15.3.1/§15.3.4/§15.3.7/§15.3.8 alias members are not class members & don't inherit; §15.6.10 *(blocking)* needs full extension members, not just methods; §15.10 user-defined/conversion operators vs. predefined alias conversions; §15.11 which constructors an alias declares.
-- **Namespaces (§14)**: §14.4/§14.5.2 terminology clash with using-alias directives & lookup precedence; §14.6/§14.7 *(edited; verify)* prose still lists 5 type kinds, nesting/scope; §14.8 alias type vs. `::` qualifier.
-- **Patterns (§11)**: §11.2.1 add alias conversions to pattern-compatibility & resolve erasure; §11.2.2–§11.2.4 runtime type test, constant-to-alias, `var` infers alias; §11.3/§11.4 subsumption & exhaustiveness (`case CustomerId` vs. `case int`).
-- **Grammar**: add `alias_type_declaration`/`alias_modifier`/`alias_type_body` to `type_declaration`; *(blocking)* `extension_member_declaration` is absent from the consolidated grammar; verify `alias` contextual-keyword disambiguation.
-- **Variables (§9)**: §9.3 default of alias = default of underlying; §9.4 definite assignment for alias-over-struct vs. -class; §9.6 atomicity for alias-over-primitive; §9.7 `ref`-to-alias.
-- **Statements (§13)**: §13.6 alias locals/constants & `var`; §13.9.5 `foreach` enumerator/element resolution; §13.10.5/§13.15 `return`/`yield` underlying→alias is explicit-only; §13.11/§13.14/§13.13 `using`/`lock` over alias.
-- **Type-specific pages**: structs §16.4 (ValueType inheritance, boxing, `this`, ref/readonly-struct underlying); enums §20.1/§20.6 (enum operators; not an "enum type"); arrays §17.2/§17.4/§17.6 (array type classification, Index/Range, covariance); delegates §21.2/§21.5/§21.6 (`System.Delegate`, `new`, `+`/`-`, invocation); ranges §18 (Index/Range pattern support).
-- **Unsafe code (§23/§24)**: meaning of `unsafe alias`; alias-over-unmanaged as pointer element type & `T* ↔ alias*`; `fixed`/fixed-size buffers/`stackalloc`/`sizeof` admitting aliases.
-- **Lexical & interfaces**: §6.4.4 `alias` contextual-keyword disambiguation; §19.2.4/§19.6.2/§19.6.5 alias-over-interface in base lists, explicit-implementation qualifier, interface mapping.
-- **Library & portability**: Annex C a new required `System.Runtime.CompilerServices` attribute to round-trip alias info plus `System.Type`/reflection guidance; portability annex note implementation-defined alias metadata/reflection surfacing.
