@@ -26,11 +26,12 @@ Persistent aliases are intended to be erased (a `CustomerId` is represented at r
 Alias members are written as if they were members of the alias type and may use `this`, but are syntactic sugar for extension members over the alias type.
 
 TODO add one-line summary of conversion rule, as most behavior falls out of it
+TODO The guiding principle is that anything that can be done with a value of `U` (underlying type) can also be done with a value of `A` (alias type on `U`).
 
 ## Motivation
 [motivation]: #motivation
 
-C# programmers frequently use primitive, framework, or domain-neutral types to represent distinct domain concepts:
+Common types are often used to represent distinct domain concepts:
 
 ```cs
 void Transfer(int fromAccountId, int toAccountId, decimal amount);
@@ -38,9 +39,9 @@ void Move(double distanceInMeters, double altitudeInMeters);
 void SendEmail(string address, string subject, string body);
 ```
 
-These signatures are compact, but they do not encode the intended roles of their values. Accidentally passing an order id where a customer id is expected, mixing values measured in different units, or mixing trusted and untrusted strings are all type-correct today if the underlying representations match.
+It's possible to accidentally pass an order id for a customer id, to mix values of different units, or to mix trusted and untrusted strings. 
 
-Developers can create wrapper structs or records to recover nominal distinction:
+A possible solution is to use wrapper structs or records:
 
 ```cs
 readonly record struct CustomerId(int Value);
@@ -54,7 +55,7 @@ That pattern works, but it has costs:
 - It affects serialization, reflection, interop, generic constraints, default values, and overload resolution as a normal wrapper type.
 - It is verbose enough that many APIs keep using primitives instead.
 
-Developers can create type aliases:
+Another possible solution is to use type aliases:
 
 ```cs
 using CustomerId = int;
@@ -64,20 +65,11 @@ This improves readability but:
 - It must be repeated from file to file.
 - It does not prevent mixing a `CustomerId` with any other `int`.
 
-The goal of persistent type aliases is to provide nominal static checking with the runtime behavior and performance profile of the underlying representation.  
+The goal of persistent type aliases is to treat alias types as distinct types from the point of view of the language, but that are erased to the underlying type.  
 This is similar in spirit to [branded types](https://github.com/microsoft/TypeScript/wiki/FAQ#can-i-make-a-type-alias-nominal) in TypeScript, [opaque type aliases](https://docs.scala-lang.org/scala3/book/types-opaque-types.html) in Scala 3, or [newtypes](https://www.haskell.org/onlinereport/haskell2010/haskellch4.html#x10-710004.2.3) in Haskell.
 
 ## Detailed design
 [design]: #detailed-design
-
-This proposal introduces persistent alias types as erased, nominal source-level types over an underlying representation type:
-
-- A persistent alias is a distinct type in source, but is not an ordinary wrapper type.
-- A persistent alias is erased to its underlying representation.
-- Alias members are specified in terms of `this`, with no named receiver parameter in source.
-- Lowering preserves that abstraction boundary; any receiver parameter used by the implementation is an implementation detail and does not introduce a user-visible or metadata-visible synthesized name.
-
-The guiding principle is that anything that can be done with a value of `U` can also be done with a value of `A`.
 
 Throughout this section, ~~strikethrough~~ indicates text being removed from the existing specification, and **bold** indicates text being added.  Unchanged prose is quoted verbatim for context.
 
@@ -122,15 +114,15 @@ An alias type declaration specifies its underlying type:
 alias CustomerId : int;
 ```
 
-The identifier `CustomerId` is a type name in source. It may be used anywhere a type name could be used, including signatures, type arguments, pointer element type.
+The identifier `CustomerId` is a type name in source.
 
 The type after `:` is the alias type's *direct underlying type*, which may itself be an alias type.  
 The *ultimate underlying type* of an alias type is obtained by following the chain of direct underlying types until reaching a type that is not an alias type.  
 For `alias A1 : int;` and `alias A2 : A1;`, the direct underlying type of `A2` is `A1` and its ultimate underlying type is `int`.
 
-TODO: the chain of direct underlying types shall be acyclic; for example, `alias A1 : A2;` together with `alias A2 : A1;` is an error. Specify where this is enforced and how it is diagnosed.
+The chain of direct underlying types shall be acyclic. For example, `alias A1 : A2;` together with `alias A2 : A1;` is an error.
 
-The underlying type shall be at least as accessible ([§7.5.5](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/basic-concepts.md#755-accessibility-constraints)) as the alias type itself. This mirrors the accessibility-domain rules for other type members and ensures that the underlying type is usable everywhere the alias type is:
+The underlying type shall be at least as accessible as the alias type itself. This ensures that the underlying type is usable everywhere the alias type is:
 
 ```cs
 public alias CustomerId : int;          // ok: `int` is public
@@ -138,9 +130,15 @@ internal class C { }
 public alias Handle : C;                // error: `C` is less accessible than `Handle`
 ```
 
-TODO: what are the restrictions on underlying type?
+The base classes rules in [15.2.4.2](https://github.com/dotnet/csharpstandard/blob/draft-v8/standard/classes.md#15242-base-classes) are augmented with:
 
-TODO: define which characteristics an alias type inherits from its underlying type, in particular whether an alias type is `abstract` when its underlying type is `abstract`, and which instance constructors an alias type is considered to declare. This determines how an alias type behaves with respect to the `new()` constraint and object creation.
+> **A base class cannot be a alias type on its own.**
+
+```cs
+class Base;
+alias Alias : Base;
+class Derived : Alias; // error (otherwise the member lookup on Derived would have to interleave instance and extension members)
+```
 
 Two alias declarations with the same underlying type are distinct source-level types:
 
@@ -154,6 +152,10 @@ OrderId orderId = ...;
 LoadCustomer(customerId); // ok
 LoadCustomer(orderId);    // error
 ```
+
+TODO: what are the restrictions on underlying type? this depends on metadata encoding
+
+TODO: define which characteristics an alias type inherits from its underlying type, and which instance constructors an alias type is considered to declare. This determines how an alias type behaves with respect to the `new()` constraint and object creation.
 
 ### Alias type members
 
@@ -170,7 +172,7 @@ alias CustomerId : int
 
 The above member is a shorthand for:
 ```cs
-extension(CustomerId id) // note: parameter identifier provided for clarity only
+extension(CustomerId id) // note: extension parameter name provided for clarity only (but would not be emitted)
 {
     public bool IsTest => id < 0;
 }
@@ -184,63 +186,36 @@ The extension eligibility rule in [§12.8.10.3](https://github.com/dotnet/csharp
 
 Therefore extension members declared for the underlying type are applicable to values of the alias type:
 ```cs
-static class IntExtensions
-{
-    extension(int value)
-    {
-        public bool IsNegative => value < 0;
-    }
-}
-
-CustomerId customerId = (CustomerId)42;
-bool isNegative = customerId.IsNegative; // ok: `CustomerId` converts to `int`
-```
-
-An alias member declared for `ProductId` should not become applicable to a `CustomerId` or an `int` receiver merely because they all use `int` at runtime:
-
-```cs
-alias CustomerId : int;
-
-alias ProductId : int
-{
-    public string Format() => $"product:{this}";
-}
-
-CustomerId customerId = (CustomerId)42;
-customerId.Format(); // error: `ProductId.Format` is not applicable to `CustomerId`
-
-int intValue = 42;
-intValue.Format(); // error: `ProductId.Format` is not applicable to `int`
+CustomerId customerId = ...;
+bool isTest = customerId.IsTest;
 ```
 
 ### Signatures and overloading
 
-The signature comparison rules in [§7.6](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/basic-concepts.md#76-signatures-and-overloading) determine which overloads may coexist.
-
-For signature comparison only, an alias type is not distinguished from its underlying type.  
-Therefore, members declared in a single type whose signatures differ only by replacing an alias type with its underlying type are not allowed.
+The signature comparison rules in [§7.6](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/basic-concepts.md#76-signatures-and-overloading) determine which overloads may coexist.  
+They remain unchanged, allowing for overloads differing by alias types only:
 
 ```cs
 alias CustomerId : int;
 
 void Load(int id);
-void Load(CustomerId id); // error
+void Load(CustomerId id); // ok
 ```
 
 ```cs
 alias OrderId : int;
 
 void Load(CustomerId id);
-void Load(OrderId id); // error
+void Load(OrderId id); // ok
 ```
+
+TODO confirm whether the metadata erasure can support this (modopt). If not, then we'll have to disallow
 
 ### Conversions
 
-An alias type `A` is an ***alias over*** type `T` if `T` is `A`'s direct underlying type, or `A`'s direct underlying type is an alias over `T`. For `alias A1 : int;` and `alias A2 : A1;`, `A2` is an alias over `A1` and over `int`, and `A1` is an alias over `int`.
-
 The predefined alias conversions are:
-- An implicit conversion exists from an alias type `A` to every type `A` is an alias over.
-- An explicit conversion exists from a type `T` to every alias type that is an alias over `T`.
+- An implicit conversion exists from an alias type `A` to underlying types (direct or indirect) of `A`.
+- An explicit conversion exists from a type `U` to every alias type `A` that has underlying type `U` (direct or indirect).
 
 ```cs
 class Animal { }
@@ -266,100 +241,81 @@ Pet pet3 = (Pet)(Animal)creature;    // ok: cast to the shared base `Animal` fir
 Creature creature3 = (Creature)(Animal)pet; // ok
 ```
 
-TODO: Should the implicit conversion from an alias type to its underlying type be a standard implicit conversion? This is observable in scenarios that permit standard implicit conversions before or after another conversion, such as user-defined conversions:
+An alias member declared for `ProductId` should not become applicable to a `CustomerId` or an `int` receiver merely because they all use `int` at runtime:
 
 ```cs
-struct DatabaseId
+alias CustomerId : int;
+
+alias ProductId : int
 {
-    public static implicit operator string(DatabaseId id) => id.ToString();
+    public string Format() => $"product:{this}";
 }
 
-alias CustomerId : DatabaseId;
+CustomerId customerId = (CustomerId)42;
+customerId.Format(); // error: `ProductId.Format` is not applicable to `CustomerId`
 
-CustomerId customerId = ...;
-string text = customerId; // TODO: ok if `CustomerId` to `DatabaseId` is a standard implicit conversion before the user-defined conversion to `string`?
+int intValue = 42;
+intValue.Format(); // error: `ProductId.Format` is not applicable to `int`
 ```
 
-TODO: conversion from expression (for example 42)
+#### Standard conversions
 
-TODO: Decide whether conversions to alias types compose with conversions to the underlying type. For example, if `CustomerId` is an alias for `int`, should a cast from `long` to `CustomerId` be permitted directly because `long` has an explicit numeric conversion to `int`, or should the conversion be written through the underlying type?
+TODO the implicit conversion from an alias type to its underlying types should be standard (we should update https://github.com/dotnet/csharpstandard/blob/draft-v8/standard/conversions.md#104-standard-conversions) but this needs to be done conversion by conversion (ie. reviewed carefully)
 
-TODO: how much should an underlying value behave like an alias value? In terms of members, operators, conversions? Answer: the principle is that anything the underlying type can do, the alias type can do. We need to push this all the way and see if anything breaks.
+TODO Not sure how to best model conversion... The current approach seems like it will lead to new conversion permutations. Alternatively, we could model the new conversion as a kind of reference conversion. But that would only help for aliases over reference types...
 
-TODO: there's still some issues. Normally, a maximum of three conversions can stack: a standard conversion, a user-defined conversion and another standard conversion. By introducing a new conversion that also a standard conversion, are we going to hit weird walls?
+Scenarios:
+- literals (42)
+- numeric conversions (int -> long, long -> int)
 
 ### Member lookup on alias-typed values
 
 Member lookup on an alias-typed value proceeds in two phases:
 
-1. **Instance members of the ultimate underlying type come first.** Lookup on a value whose type is an alias `A` first considers the instance members of `A`'s *ultimate underlying type* `U` (and `U`'s base hierarchy), exactly as if the receiver had type `U`. As with extension members generally, the alias-declared members in the second phase are only considered when this phase finds no applicable instance member.
-2. **Alias-declared members then come into play as extensions.** Each level of the alias chain contributes its declared members as extension members whose receiver parameter is that level's alias type. All levels contribute candidates regardless of which level the static receiver type names.
+1. Instance members of the ultimate underlying type come first: Lookup on a value whose type is an alias `A` first considers the instance members of `A`'s *ultimate underlying type* `U` (and `U`'s base hierarchy), exactly as if the receiver had type `U`. As with extension members generally, the alias-declared members in the second phase are only considered when this phase finds no applicable instance member.
+2. Alias-declared members then come into play as extensions: Each level of the alias and inheritance chain contributes its declared members as extension members whose receiver parameter is that level's alias type. All levels contribute candidates regardless of which level the static receiver type names.
 
-TODO: simplify below and consider betterness discussions to dedicated section
-
-Among the alias-level candidates, the alias chain is resolved by ordinary overload resolution betterness on the receiver argument, which prefers the more-specific receiver parameter type. No new betterness rule is required: the result falls out of the existing overload resolution rules in [§12.6.4.5](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/expressions.md#12645-better-conversion-from-expression), [§12.6.4.6](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/expressions.md#12646-exactly-matching-expression), and [§12.6.4.7](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/expressions.md#12647-better-conversion-target), given that an alias conversion is an *implicit* conversion ([Conversions](#conversions)) that is *not* an identity conversion.
-
-Because an alias conversion is not an identity conversion, a receiver of alias type `A` *exactly matches* ([§12.6.4.6](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/expressions.md#12646-exactly-matching-expression)) only a parameter whose type is `A` itself, so identity with `A` is preferred over any less-aliased parameter type by the first bullet of [§12.6.4.5](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/expressions.md#12645-better-conversion-from-expression). When the receiver exactly matches none of the candidate parameter types (for example, a `Companion` receiver against `Pet` and `Animal` parameters), the second bullet defers to [§12.6.4.7](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/expressions.md#12647-better-conversion-target): since the implicit alias conversion runs from more-aliased to less-aliased (and not back), `Pet` is a *better conversion target* than `Animal`, and likewise each alias level is a better target than the levels below it down to the ultimate underlying type. The net effect is that the more-aliased level wins.
-
-```cs
-class Animal { public void Eat() { } }
-alias Pet : Animal { public void Pet() { } }
-alias Companion : Pet { public void Greet() { } }
-
-Companion c = ...;
-c.Eat();    // instance member of the ultimate underlying type `Animal`
-c.Pet();    // alias member of `Pet` (as an extension)
-c.Greet();  // alias member of `Companion` (better receiver conversion than `Pet`)
-```
-
-When the same member name is declared at more than one alias level, the more-aliased level wins because its receiver conversion is better:
-
-```cs
-class Animal { public void Eat() { } }
-alias Pet : Animal { public void Describe() { } }
-alias Companion : Pet { public void Describe() { } }
-
-Companion c = ...;
-c.Describe();  // binds to `Companion.Describe`: `Companion` is a better receiver
-               // conversion than `Pet`, so the more-aliased level wins
-```
-
-The same betterness applies between an alias member/extension and an extension declared for the underlying type (less-specific):
-
-```cs
-class Animal { }
-alias Pet : Animal { public void Describe() { } } // alias member, receiver `Pet`
-
-static class AnimalExtensions
-{
-    extension(Animal animal)
-    {
-        public void Describe() { }                // extension member, receiver `Animal`
-    }
-}
-
-Pet p = ...;
-p.Describe();  // binds to the `Pet` alias member/extension since more-specific than `Animal` extension
-```
+The existing [betterness rules](https://github.com/dotnet/csharpstandard/blob/draft-v8/standard/expressions.md#12647-better-conversion-target) result in a more specific type being preferred: an alias type is a better conversion target than any of its underlying types or its base types.
 
 ### Operators
 
-TODO
-Persistent aliases should be able to use operations available on their underlying type inside alias members:
+The behavior of operators falls out of other rules.
+
+When resolving non-extension operators, the non-extension operators of the underlying type are considered operators on the alias type:
 
 ```cs
 alias CustomerId : int
 {
-    public bool IsTest => this < 0;
+    public bool IsTest => this < 0; // `this` is a `CustomerId` so gets the `<` operator from `int`
 }
 ```
 
-The design must decide which of those operations are also available at use sites:
+When resolving extension operators, the operators defined in alias types contribute to the candidate set like all extension operators.
 
 ```cs
-CustomerId id = ...;
-bool test = id < 0; // allowed directly, allowed via conversion, or disallowed?
+class Identifier;
+alias CustomerId : Identifier
+{
+    public static bool operator<(CustomerId id1, CustomerId id2) { /* which one is oldest? */ }
+}
+
+CustomerId id1 = ...;
+CustomerId id2 = ...;
+bool isOlder = id1 < id2;
 ```
+
+Binary operation are possible across alias types that share an underlying type:
+
+```cs
+alias CustomerId : int;
+alias ProductId : int;
+
+CustomerId customerId = ...;
+ProductId productId = ...;
+int result = customerId + productId; // built-in operator+(int, int)
+```
+
+TODO Is there something we could do to avoid this situation with binary operators?
 
 ### Type categories
 
@@ -367,11 +323,11 @@ An alias type belongs to the same type category as its underlying type. This cla
 
 The reference type definition in [§8.2.1](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/types.md#821-general) is updated as follows:
 
-> A reference type is a class type, an interface type, an array type, a delegate type, ~~or~~ the `dynamic` type**, or an alias type whose underlying type is a reference type**.
+> A reference type is a class type, an interface type, an array type, a delegate type, the `dynamic` type **, or an alias type whose underlying type is a reference type**.
 
 The value type definition in [§8.3.1](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/types.md#831-general) is updated as follows:
 
-> A value type is either a struct type ~~or~~**,** an enumeration type**, or an alias type whose underlying type is a value type**.
+> A value type is either a struct type, an enumeration type **, or an alias type whose underlying type is a value type**.
 
 The unmanaged type definition in [§8.8](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/types.md#88-unmanaged-types) is updated as follows:
 
@@ -391,9 +347,13 @@ where T1 : A
 where T2 : List<A>
 ```
 
-The type parameter constraint rules in [§15.2.5](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/classes.md#1525-type-parameter-constraints) are updated as follows:
+The type parameter constraint rules in [§15.2.5](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/classes.md#1525-type-parameter-constraints) are updated as follows.
 
-For the purposes of those rules, an alias type used as a type parameter constraint is *classified* according to its ultimate underlying type: it is a primary or secondary constraint, and a *class_type* or *interface_type* constraint, exactly as its ultimate underlying type would be, and it contributes to the effective base class and the effective interface set exactly what its ultimate underlying type would. Consequently the primary-constraint, secondary-constraint, *interface_type*-constraint, accessibility, effective-base-class, and effective-interface-set rules need no further changes for alias types.
+For the purposes of those rules, an alias type used as a type parameter constraint is *classified* according to its ultimate underlying type:
+- it is a primary or secondary constraint, a *class_type* or *interface_type* constraint, exactly as its ultimate underlying type would be, and
+- it contributes to the effective base class and the effective interface set exactly what its ultimate underlying type would.
+
+Consequently the primary-constraint, secondary-constraint, *interface_type*-constraint, accessibility, effective-base-class, and effective-interface-set rules need no further changes for alias types.
 
 Note: Because an alias type is classified according to its underlying type, an alias whose underlying type is a class type is a *class_type* constraint. The existing rule that at most one constraint may be a class type therefore counts such an alias as a class type. For instance, given `alias A : C;`, both `where T : C, A` and `where T : A1, A2` (with `alias A1 : C1;` and `alias A2 : C2;`) are errors.
 
@@ -416,21 +376,24 @@ M<CustomerId>((CustomerID)"Mads");
 ```
 TODO this bothers me somewhat because one would have simply written `void M(string s)` and not bothered with a generic method.
 
-The rule that a type shall not be specified more than once in a given `where` clause (in the *interface_type* constraint rules of [§15.2.5](https://github.com/dotnet/csharpstandard/blob/standard-v7/standard/classes.md#1525-type-parameter-constraints)) is updated as follows:
-
-> A type specified as an *interface_type* constraint shall satisfy the following rules:
->
-> - The type shall be an interface type.
-> - A type shall not be specified more than once in a given `where` clause**, where two constraints are the same type if they are the same type after each alias type is replaced by its underlying type (applied recursively to constructed types and to alias types whose underlying type is itself an alias type)**.
-
-This disallows redundant constraints such as the following:
+We're not modifiying the interface_type constraint rules, so the following examples are allowed:
 
 ```cs
 alias A : I;
 alias A2 : A;
-void M<T>() where T : A, I { }             // error: A and I specify the same constraint
-void M<T>() where T : List<A>, List<I> { } // error: List<A> and List<I> specify the same constraint
-void M<T>() where T : A2, A { }            // error: A2 and A reduce to the same constraint (I)
+
+class C<T> where T : A, I { }
+class D<T> where T : A2, A { }
+```
+
+```cs
+interface I<T>;
+class U;
+alias A : U;
+alias A2 : A;
+
+class C<T> where T : I<A>, I<U> { }
+class D<T> where T : I<A2>, I<A> { }
 ```
 
 #### Satisfying constraints
